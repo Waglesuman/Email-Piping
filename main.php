@@ -25,6 +25,8 @@ if (!defined('CPM_PLUGIN_DIR_PATH')) {
 
 add_action('init', 'email_piping_init');
 
+
+
 function email_piping_init()
 {
   if (extension_loaded('imap')) {
@@ -36,48 +38,88 @@ function email_piping_init()
     // Connect to the server
     $imap = imap_open($server, $email, $password) or die('Cannot connect to the server: ' . imap_last_error());
 
-    // Get the number of messages in the inbox
-    $MC = imap_check($imap);
-    $num = $MC->Nmsgs;
+    $emails = imap_search($imap, 'UNSEEN');
 
-    // Fetch the latest message in the mailbox
-    $result = imap_fetch_overview($imap, "$num", 0);
+    // Loop through each email and extract its information
 
-    // Check if there is a message to process
-    if (count($result) > 0) {
-      // Get the message details
-      $overview = array_shift($result);
-      $msgno = $overview->msgno;
-      $subject = $overview->subject;
-      $body = imap_fetchbody($imap, $msgno, 1);
+    foreach ($emails as $email) {
+      $headerInfo = imap_headerinfo($imap, $email);
+      $message = imap_fetchbody($imap, $email, 1);
 
-      // Check if the message has not been processed before
-      $processed_messages = get_option('processed_messages', array());
-      if (!in_array($msgno, $processed_messages)) {
-        // Check if the message has a subject and body
-        if (!empty($subject) && !empty($body)) {
-          // Create a new WordPress post
-          $post_title = $subject; // Set the post title
-          $post_content = $body; // Use the email message as the post content
-          // Create the new post
-          $new_post = array(
-            'post_title' => $post_title,
-            'post_content' => $post_content,
-            'post_status' => 'publish'
+      // Extract information from the message
+      $subject = $headerInfo->subject;
+      $date = date('Y-m-d H:i:s', strtotime($headerInfo->date));
+      $body = $message;
+
+      // Extract attachments, if any
+      $attachments = array();
+      $structure = imap_fetchstructure($imap, $email);
+
+      if (isset($structure->parts) && count($structure->parts)) {
+        for ($i = 0; $i < count($structure->parts); $i++) {
+          $attachment = array(
+            'is_attachment' => false,
+            'filename' => '',
+            'name' => '',
+            'attachment' => ''
           );
-          wp_insert_post($new_post);
-
-          // Update the list of processed messages
-          $processed_messages[] = $msgno;
-          update_option('processed_messages', $processed_messages);
-        } else {
-          // Log an error if the message is empty
-          error_log('Empty subject or body in email message');
+          if ($structure->parts[$i]->ifdparameters) {
+            foreach ($structure->parts[$i]->dparameters as $object) {
+              if (strtolower($object->attribute) == 'filename') {
+                $attachment['is_attachment'] = true;
+                $attachment['filename'] = $object->value;
+              }
+            }
+          }
+          if ($structure->parts[$i]->ifparameters) {
+            foreach ($structure->parts[$i]->parameters as $object) {
+              if (strtolower($object->attribute) == 'name') {
+                $attachment['is_attachment'] = true;
+                $attachment['name'] = $object->value;
+              }
+            }
+          }
+          if ($attachment['is_attachment']) {
+            $attachment['attachment'] = imap_fetchbody($imap, $email, $i + 1);
+            if ($structure->parts[$i]->encoding == 3) {
+              $attachment['attachment'] = base64_decode($attachment['attachment']);
+            } elseif ($structure->parts[$i]->encoding == 4) {
+              $attachment['attachment'] = quoted_printable_decode($attachment['attachment']);
+            }
+            $attachments[] = $attachment;
+          }
         }
       }
-    }
+      
+      // Store the information in the WordPress database
+      $postarr = array(
+        'post_title' => $subject,
+        'post_content' => $body,
+        'post_date' => $date,
+        'post_author' => 1,
+        // the ID of the author who will be attributed to the post
+        'post_status' => 'publish',
+        'post_type' => 'post' // the type of post to create
+      );
+      $postID = wp_insert_post($postarr);
+      // Store the attachments, if any, as media attachments to the post
+      if (is_array($attachments) || is_object($argument)) {
 
-    // Close the IMAP connection
-    imap_close($imap);
+        foreach ($attachments as $attachment) {
+          require_once(ABSPATH . 'wp-admin/includes/media.php');
+          $mediaID = media_handle_sideload($attachment, $postID, $attachment['name']);
+          if (!is_wp_error($mediaID)) {
+            $attachmentData = array(
+              'ID' => $mediaID,
+              'post_parent' => $postID
+            );
+            wp_update_post($attachmentData);
+          }
+        }
+      }
+
+      // Close the mailbox connection
+      imap_close($imap);
+    }
   }
 }
