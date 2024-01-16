@@ -31,8 +31,8 @@ function email_piping_init()
 {
   if (extension_loaded('imap')) {
     // Server details
-    $email = 'test.sumanwagle@gmail.com';
-    $password = 'eixbjprgzpzvzxow';
+    $email = 'gmail'; // enter your gmail username
+    $password = 'xxx'; // enter your email password 
     $server = '{imap.gmail.com:993/imap/ssl/novalidate-cert}INBOX';
 
     // Connect to the server
