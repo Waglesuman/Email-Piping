@@ -10,12 +10,12 @@ License: GPL3
 Text Domain: cpmemailpiping
 */
 
-// If this file is called directly, abort.
+// Prevent direct access to the script.
 if (!defined('WPINC')) {
   die;
 }
 
-/* Defining a constant. */
+// Define plugin directory URLs and paths.
 if (!defined('CPM_PLUGIN_DIR')) {
   define('CPM_PLUGIN_DIR', plugin_dir_url(__FILE__));
 }
@@ -23,46 +23,58 @@ if (!defined('CPM_PLUGIN_DIR_PATH')) {
   define('CPM_PLUGIN_DIR_PATH', plugin_dir_path(__FILE__));
 }
 
+// Hook the 'email_piping_init' function to the WordPress 'init' action.
 add_action('init', 'email_piping_init');
 
-
-
+/**
+ * Initializes the email piping process.
+ */
 function email_piping_init()
 {
-  if (extension_loaded('imap')) {
-    // Server details
-    $email = 'gmail'; // enter your gmail username
-    $password = 'xxx'; // enter your email password 
-    $server = '{imap.gmail.com:993/imap/ssl/novalidate-cert}INBOX';
+  // Check if the IMAP extension is loaded before proceeding.
+  if (!extension_loaded('imap')) {
+    return; // Exit if IMAP is not enabled.
+  }
+  
+  // Email server connection details.
+  $email = 'gmail'; // Replace with actual Gmail username.
+  $password = 'xxx'; // Replace with actual Gmail password.
+  $server = '{imap.gmail.com:993/imap/ssl/novalidate-cert}INBOX';
 
-    // Connect to the server
-    $imap = imap_open($server, $email, $password) or die('Cannot connect to the server: ' . imap_last_error());
+  // Attempt to connect to the email server.
+  $imap = imap_open($server, $email, $password) or die('Cannot connect to the server: ' . imap_last_error());
 
-    $emails = imap_search($imap, 'UNSEEN');
+  // Search for unread emails.
+  $emails = imap_search($imap, 'UNSEEN');
 
-    // Loop through each email and extract its information
+  // If emails are found, process each one.
+  if ($emails) {
+    foreach ($emails as $email_number) {
+      // Retrieve email header information.
+      $headerInfo = imap_headerinfo($imap, $email_number);
+      $message = imap_fetchbody($imap, $email_number, 1);
 
-    foreach ($emails as $email) {
-      $headerInfo = imap_headerinfo($imap, $email);
-      $message = imap_fetchbody($imap, $email, 1);
-
-      // Extract information from the message
+      // Extract email subject, date, and body.
       $subject = $headerInfo->subject;
       $date = date('Y-m-d H:i:s', strtotime($headerInfo->date));
       $body = $message;
 
-      // Extract attachments, if any
+      // Initialize an array to store attachments.
       $attachments = array();
-      $structure = imap_fetchstructure($imap, $email);
+      $structure = imap_fetchstructure($imap, $email_number);
 
+      // Check if there are any attachments and process them.
       if (isset($structure->parts) && count($structure->parts)) {
         for ($i = 0; $i < count($structure->parts); $i++) {
+          // Initialize attachment array with default values.
           $attachment = array(
             'is_attachment' => false,
             'filename' => '',
             'name' => '',
             'attachment' => ''
           );
+
+          // Check for 'filename' parameter in each part.
           if ($structure->parts[$i]->ifdparameters) {
             foreach ($structure->parts[$i]->dparameters as $object) {
               if (strtolower($object->attribute) == 'filename') {
@@ -71,6 +83,8 @@ function email_piping_init()
               }
             }
           }
+
+          // Check for 'name' parameter in each part.
           if ($structure->parts[$i]->ifparameters) {
             foreach ($structure->parts[$i]->parameters as $object) {
               if (strtolower($object->attribute) == 'name') {
@@ -79,47 +93,51 @@ function email_piping_init()
               }
             }
           }
+
+          // If an attachment is found, decode it based on its encoding.
           if ($attachment['is_attachment']) {
-            $attachment['attachment'] = imap_fetchbody($imap, $email, $i + 1);
-            if ($structure->parts[$i]->encoding == 3) {
-              $attachment['attachment'] = base64_decode($attachment['attachment']);
-            } elseif ($structure->parts[$i]->encoding == 4) {
-              $attachment['attachment'] = quoted_printable_decode($attachment['attachment']);
+            $attachment['attachment'] = imap_fetchbody($imap, $email_number, $i + 1);
+            switch ($structure->parts[$i]->encoding) {
+              case 3:
+                $attachment['attachment'] = base64_decode($attachment['attachment']);
+                break;
+              case 4:
+                $attachment['attachment'] = quoted_printable_decode($attachment['attachment']);
+                break;
             }
             $attachments[] = $attachment;
           }
         }
       }
       
-      // Store the information in the WordPress database
+      // Prepare the post data array.
       $postarr = array(
-        'post_title' => $subject,
+        'post_title'   => $subject,
         'post_content' => $body,
-        'post_date' => $date,
-        'post_author' => 1,
-        // the ID of the author who will be attributed to the post
-        'post_status' => 'publish',
-        'post_type' => 'post' // the type of post to create
+        'post_date'    => $date,
+        'post_author'  => 1, // Replace with the actual author ID.
+        'post_status'  => 'publish',
+        'post_type'    => 'post'
       );
-      $postID = wp_insert_post($postarr);
-      // Store the attachments, if any, as media attachments to the post
-      if (is_array($attachments) || is_object($argument)) {
 
+      // Insert the post into the WordPress database.
+      $postID = wp_insert_post($postarr);
+
+      // If attachments are present, handle them.
+      if ($attachments) {
         foreach ($attachments as $attachment) {
+          // Load WordPress media handling functions.
           require_once(ABSPATH . 'wp-admin/includes/media.php');
           $mediaID = media_handle_sideload($attachment, $postID, $attachment['name']);
           if (!is_wp_error($mediaID)) {
-            $attachmentData = array(
-              'ID' => $mediaID,
-              'post_parent' => $postID
-            );
-            wp_update_post($attachmentData);
+            // Update attachment post data.
+            wp_update_post(array('ID' => $mediaID, 'post_parent' => $postID));
           }
         }
       }
-
-      // Close the mailbox connection
-      imap_close($imap);
     }
   }
+  
+  // Close the IMAP connection.
+  imap_close($imap);
 }
